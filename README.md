@@ -97,7 +97,7 @@ That's it! The JAR file will be executed on the server JVM, and not on an own ne
 
 ### JVM arguments
 
-If the Java programs to be executed require certain JVM arguments, they have to be given to the JVM at server startup.
+If the Java programs to be executed require certain JVM arguments, they have to be passed to the JVM at server startup.
 
     java $JVM_ARGS -classpath /path/nailgun/server.jar com.martiansoftware.nailgun.NGServer &
 

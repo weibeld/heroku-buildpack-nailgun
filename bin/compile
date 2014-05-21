@@ -1,0 +1,115 @@
+#!/bin/bash
+# ------------------------------------------------------------------------------
+# Called by the build process (slug compiler): 
+#       compile <BUILD_DIR> <CACHE_DIR> <ENV_DIR>
+# ------------------------------------------------------------------------------
+# This executes in a build environment where:
+# /app                          is the slug compiler
+# /tmp/build_<hash> (BUILD_DIR) is the root directory of our application,
+#                               and at run time becomes /app on the dyno
+# ------------------------------------------------------------------------------
+# Summary: installs a Nailgun server and client to a directory ($INSTALL_DIR)
+# of our application slug. Stores a ready-to-use Nailgun server and client in
+# the build cache for future builds.
+# After running this buildpack, the Nailgun server can be started with
+# java -classpath <path/to/server.jar> java com.martiansoftware.nailgun.NGServer
+# The Nailgun client is ng.
+# ------------------------------------------------------------------------------
+
+# Exit whole script if any command returns a non-zero status (i.e. error)
+set -e
+
+# BUILD_DIR is the root directory of our app
+BUILD_DIR=$1    # Usually, /tmp/build_<hash>
+CACHE_DIR=$2    # Usually, /app/tmp/cache
+cd $BUILD_DIR
+
+# Location in our app directory tree for installing Nailgun
+INSTALL_DIR=vendor/nailgun
+mkdir -p $BUILD_DIR/$INSTALL_DIR
+
+# Function for adding Nailgun to the PATH of the run time environment. Scripts
+# in .profile.d/ are sourced on dyno start ups.
+set_path() {
+  mkdir -p $BUILD_DIR/.profile.d
+  echo "PATH=\$HOME/$INSTALL_DIR:\$PATH" >.profile.d/nailgun_path.sh
+}
+
+# Location in the build cache o hold previously built Nailgun executables
+NAILGUN_CACHE=$CACHE_DIR/nailgun
+
+# If a nailgun directory in the build cache exists, then a previous Nailgun
+# build has been cached. We just have to copy the ready-to-use server and
+# client to the Nailgun installation directory, and we're done.
+if [ -d $NAILGUN_CACHE ]; then
+  echo "-----> Cached Nailgun executables detected"
+  SERVER_FILENAME=$(basename $(ls $NAILGUN_CACHE/*.jar))
+  echo "       Installing server '$SERVER_FILENAME' to ~/$INSTALL_DIR"
+  cp $NAILGUN_CACHE/$SERVER_FILENAME $BUILD_DIR/$INSTALL_DIR
+  echo "       Installing client 'ng' to ~/$INSTALL_DIR"
+  cp $NAILGUN_CACHE/ng $BUILD_DIR/$INSTALL_DIR
+  set_path
+  exit 0
+fi
+
+# If there's no cached Nailgun, we have to get and build it by ourselves. We
+# will also cache the result of the build.
+mkdir -p $NAILGUN_CACHE
+
+# Temporarily install Maven, which is needed for building the Nailgun server
+echo -n "-----> Installing Maven (for building the Nailgun server)... "
+# This URL should return a tar.gz with precompiled Maven binaries
+MAVEN_URL=http://mirror.switch.ch/mirror/apache/dist/maven/maven-3/3.2.1/binaries/apache-maven-3.2.1-bin.tar.gz
+curl $MAVEN_URL --output maven.tar.gz >/dev/null 2>&1
+mkdir maven
+# Extract maven.tar.gz to the directory ./maven
+tar -xzf maven.tar.gz -C maven --strip-components 1
+MVN=$BUILD_DIR/maven/bin/mvn  # The Maven executable
+echo "Done"
+
+
+# Get the Nailgun sources from GitHub
+echo "-----> Fetching Nailgun from https://github.com/martylamb/nailgun... "
+git clone https://github.com/martylamb/nailgun >/dev/null 2>&1
+echo "Done"
+cd nailgun
+
+
+# Build and install Nailgun server. The server is the JAR file $SERVER_FILENAME
+cd nailgun-server
+echo -n "-----> Building Nailgun server (may take a while...) "
+$MVN clean install >/dev/null 2>&1
+echo "Done"
+# Get the filename of the server JAR. There are also sources and Javadoc JARs.
+# (Also tried: $MVN help:evaluate -Dexpression=project.version | grep '^[0-9]')
+SERVER_FILENAME=$(basename $(ls target/*.jar | grep -v 'sources.jar$' | grep -v 'javadoc.jar$'))
+echo "       Installing server '$SERVER_FILENAME' to ~/$INSTALL_DIR"
+cp target/$SERVER_FILENAME $BUILD_DIR/$INSTALL_DIR  # Install
+cp target/$SERVER_FILENAME $NAILGUN_CACHE           # Cache
+cd ..
+
+
+# Build and install Nailgun client. The client is the binary executable ng
+cd nailgun-client
+echo -n "-----> Building Nailgun client... "
+gcc -O3 -o ng ng.c >/dev/null 2>&1
+echo "Done"
+echo "       Intalling client 'ng' to ~/$INSTALL_DIR"
+cp ng $BUILD_DIR/$INSTALL_DIR   # Install
+cp ng $NAILGUN_CACHE            # Cache
+cd ..
+
+
+# Done with Nailgun installation, don't need this stuff anymore
+cd ..
+rm -rf nailgun
+
+# Remove Maven. This buildpack installs Maven only temporarily and Maven won't
+# be available to the app at run time.
+rm -rf maven
+rm maven.tar.gz
+rm -rf .m2
+
+set_path
+
+exit 0
